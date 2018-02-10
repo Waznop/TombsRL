@@ -1,15 +1,30 @@
 from tombs import TombsGame, Role, Tile, Faction
+from enum import Enum
+from train import TombsEnv
+from model import ActorCritic
+import tensorflow as tf
 import numpy as np
 import pygame
 import sys
 import pickle
 import os
+import argparse
+import random
 
 C_WHITE = (255, 255, 255)
 C_LIGHT = (224, 224, 224)
 C_DARK = (100, 100, 100)
 C_RED = (255, 0, 0)
 C_GREEN = (0, 255, 0)
+
+class Agent(Enum):
+	HUMAN = 0
+	RANDOM = 1
+	BOT = 2
+
+	@classmethod
+	def exists(cls, value):
+		return any(value == item.value for item in cls)
 
 class TombsWrapper:
 
@@ -23,6 +38,10 @@ class TombsWrapper:
 				self._history = pickle.load(f)
 		else:
 			self._tombsGame = TombsGame()
+
+	@property
+	def tombsGame(self):
+		return self._tombsGame
 
 	def isPlaying(self):
 		return self._tombsGame != None
@@ -82,6 +101,25 @@ class TombsWrapper:
 		else:
 			return self._curTurn >= len(self._history)
 
+	def getMoves(self):
+		if self.isPlaying():
+			return self._tombsGame.getMoves()
+		return []
+
+	def getWinner(self):
+		if self.isPlaying():
+			return self._tombsGame.winner
+		if self.getTurn() == 0:
+			s1, s2 = self.getScores()
+			if s1 > s2:
+				return Faction.LIGHT
+			elif s1 < s2:
+				return Faction.DARK
+			else:
+				return Faction.GREY
+		else:
+			return Faction.getOppFaction(self.getCurFaction())
+
 	def prepTurn(self):
 		if self.isPlaying():
 			return self._tombsGame.prepTurn()
@@ -119,7 +157,7 @@ class Display:
 	B_SELECT = 2
 	B_FACTION = 10
 
-	def __init__(self, path):
+	def __init__(self, p1, p2, path=None, save=False):
 		pygame.init()
 		pygame.display.set_caption(self.G_NAME)
 		self._screen = pygame.display.set_mode(self.S_SIZE)
@@ -127,9 +165,23 @@ class Display:
 		self._assets = {}
 		self._initAssets()
 
+		self._players = (p1, p2)
+		self._save = save
+		print("Starting a game of {} vs {}".format(p1, p2))
 		self._tombs = TombsWrapper(path)
 		self._boardSize = self._tombs.getBoardSize()
 		self._handSize = self._tombs.getHandSize()
+
+		self._env = None
+		self._session = None
+		self._model = None
+		if p1 == Agent.BOT or p2 == Agent.BOT:
+			self._env = TombsEnv(self._tombs.tombsGame)
+			self._session = tf.Session()
+			self._model = ActorCritic(self._env.obs_space(), self._env.act_space())
+			saver = tf.train.Saver()
+			latest = tf.train.latest_checkpoint(TombsGame.CHECKPOINTS_DIR)
+			saver.restore(self._session, latest)
 
 		self._illegalMove = False
 		self._selectedTile = (-1, -1)
@@ -143,22 +195,32 @@ class Display:
 
 	def _run(self):
 		running = True
-		savedHistory = False
+		gameEnded = False
 		while running:
 			for event in pygame.event.get():
 				if event.type == pygame.QUIT:
+					if self._save:
+						self._tombs.saveHistory()
+					if self._session:
+						self._session.close()
 					running = False
 				if event.type == pygame.MOUSEBUTTONUP:
 					if not self._tombs.getGameEnded():
 						if self._tombs.isPlaying():
-							self._checkCollisions(pygame.mouse.get_pos())
+							agent = self._getCurPlayer()
+							if agent == Agent.HUMAN:
+								self._checkCollisions(pygame.mouse.get_pos())
+							elif agent == Agent.RANDOM:
+								self._makeRandomMove()
+							elif agent == Agent.BOT:
+								self._makeBotMove()
 						elif event.button == 1: # LEFT
 							self._tombs.makeMove(None, None)
 						elif event.button == 3: # RIGHT
 							self._tombs.backtrack()
-					elif not savedHistory:
-						self._tombs.saveHistory()
-						savedHistory = True
+					elif not gameEnded:
+						print("Game ended! Winner is {}.".format(self._tombs.getWinner()))
+						gameEnded = True
 
 			self._screen.fill(C_WHITE)
 			self._drawBoard()
@@ -168,22 +230,10 @@ class Display:
 			self._clock.tick(self.G_FPS)
 		pygame.quit()
 
-	def _checkCollisions(self, pos):
-		nr, nc = self._boardSize
-
-		for r in range(nr):
-			for c in range(nc):
-				rect = self._tiles[r, c]
-				if rect.collidepoint(pos):
-					self._selectedTile = (r, c)
-					self._takeTurn()
-					return
-
-		for i in range(self._handSize):
-			rect = self._cards[i]
-			if rect.collidepoint(pos):
-				self._selectedCard = i
-				return
+	def _getCurPlayer(self):
+		faction = self._tombs.getCurFaction()
+		p1, p2 = self._players
+		return p1 if faction == Faction.LIGHT else p2
 
 	### INIT ###
 
@@ -280,6 +330,51 @@ class Display:
 
 	### INPUT ###
 
+	def _makeBotMove(self):
+		faction = self._env.faction()
+		obs = self._env.get_obs()
+		legal = self._env.get_legal()
+
+		policy = self._session.run(
+			[self._model.policy_output],
+			feed_dict={
+				self._model.observations: [obs],
+				self._model.legal_actions: [legal],
+				self._model.is_training: False
+			}
+		)
+
+		policy = policy[0][0]
+		action_idx = np.argmax(policy)
+		idx, r, c = np.unravel_index(action_idx, policy.shape)
+		self._selectedCard = idx
+		self._selectedTile = (r, c)
+		self._takeTurn()
+
+	def _makeRandomMove(self):
+		moves = self._tombs.getMoves()
+		idx, coord = random.choice(moves)
+		self._selectedCard = idx
+		self._selectedTile = coord
+		self._takeTurn()
+
+	def _checkCollisions(self, pos):
+		nr, nc = self._boardSize
+
+		for r in range(nr):
+			for c in range(nc):
+				rect = self._tiles[r, c]
+				if rect.collidepoint(pos):
+					self._selectedTile = (r, c)
+					self._takeTurn()
+					return
+
+		for i in range(self._handSize):
+			rect = self._cards[i]
+			if rect.collidepoint(pos):
+				self._selectedCard = i
+				return
+
 	def _takeTurn(self):
 		if self._selectedCard == -1:
 			self._illegalMove = True
@@ -294,7 +389,30 @@ class Display:
 		self._tombs.prepTurn()
 
 if __name__ == "__main__":
-	path = sys.argv[1] if len(sys.argv) >= 2 else None
-	if path:
-		path = os.path.join(TombsGame.CHECKPOINTS_DIR, path)
-	display = Display(path)
+
+	parser = argparse.ArgumentParser(description='Play a game of Tombs!\
+		0: Human\
+		1: Random\
+		2: Bot\
+	')
+
+	parser.add_argument('-r', help='watch replay')
+	parser.add_argument('-p1', type=int, help='agent for player 1')
+	parser.add_argument('-p2', type=int, help='agent for player 2')
+	parser.add_argument('-s', action='store_true', help='save history')
+	args = parser.parse_args()
+
+	if args.r:
+		path = os.path.join(TombsGame.CHECKPOINTS_DIR, args.r)
+		Display(path=path)
+		exit(0)
+
+	p1 = Agent.HUMAN
+	p2 = Agent.HUMAN
+	if Agent.exists(args.p1):
+		p1 = Agent(args.p1)
+	if Agent.exists(args.p2):
+		p2 = Agent(args.p2)
+	Display(p1, p2, save=args.s)
+
+

@@ -10,8 +10,11 @@ class TombsEnv:
 
 	DEF_FAC = Faction.LIGHT
 
-	def __init__(self):
-		self.reset()
+	def __init__(self, tombs=None):
+		if tombs:
+			self._tombs = tombs
+		else:
+			self.reset()
 
 	@staticmethod
 	def obs_space():
@@ -27,6 +30,11 @@ class TombsEnv:
 		nhand = TombsGame.HAND_SIZE + 1
 		return (None, nhand, nr, nc)
 
+	def reset(self):
+		self._tombs = TombsGame()
+		self._tombs.prepTurn()
+		return self.get_obs()
+		
 	def get_legal(self):
 		moves = self._tombs.getMoves()
 		act_sp = TombsEnv.act_space()
@@ -70,11 +78,6 @@ class TombsEnv:
 	def step(self, action):
 		i, r, c = action
 		assert self._tombs.makeMove(i, (r, c))
-		self._tombs.prepTurn()
-		return self.get_obs()
-
-	def reset(self):
-		self._tombs = TombsGame()
 		self._tombs.prepTurn()
 		return self.get_obs()
 
