@@ -34,7 +34,7 @@ class TombsEnv:
 		self._tombs = TombsGame()
 		self._tombs.prepTurn()
 		return self.get_obs()
-		
+
 	def get_legal(self):
 		moves = self._tombs.getMoves()
 		act_sp = TombsEnv.act_space()

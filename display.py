@@ -5,7 +5,6 @@ from model import ActorCritic
 import tensorflow as tf
 import numpy as np
 import pygame
-import sys
 import pickle
 import os
 import argparse
@@ -178,7 +177,7 @@ class Display:
 		if p1 == Agent.BOT or p2 == Agent.BOT:
 			self._env = TombsEnv(self._tombs.tombsGame)
 			self._session = tf.Session()
-			self._model = ActorCritic(self._env.obs_space(), self._env.act_space())
+			self._model = ActorCritic(TombsEnv.obs_space(), TombsEnv.act_space())
 			saver = tf.train.Saver()
 			latest = tf.train.latest_checkpoint(TombsGame.CHECKPOINTS_DIR)
 			saver.restore(self._session, latest)
