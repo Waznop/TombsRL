@@ -38,9 +38,15 @@ def evaluate(session, model, faction):
 			assert(tombs.makeMove(idx, coord))
 			tombs.prepTurn()
 
-	return env.winner() == faction
+	return (env.winner() == faction, tombs.getTurn() == 0)
 
-def run(n=100):
+def run(n, f):
+
+	if not n:
+		n = 100
+	if not f:
+		f = 0
+
 	graph = tf.Graph()
 	with graph.as_default():
 		model = ActorCritic(TombsEnv.obs_space(), TombsEnv.act_space())
@@ -50,28 +56,37 @@ def run(n=100):
 		latest = tf.train.latest_checkpoint(TombsGame.CHECKPOINTS_DIR)
 		saver.restore(session, latest)
 
-		wins = 0
-		losses = 0
+		wins = [0, 0]
+		losses = [0, 0]
 
-		botFaction = TombsEnv.DEF_FAC
+		botFaction = Faction.LIGHT if f < 2 else Faction.DARK
+		print("Bot faction: {}".format(botFaction))
+		print("Alternate: {}".format(f == 0))
 		for i in range(n):
-			if evaluate(session, model, botFaction):
-				wins += 1
-				print("Game {}: bot wins.".format(i))
-			else:
-				losses += 1
-				print("Game {}: bot loses.".format(i))
-			botFaction = Faction.getOppFaction(botFaction)
+			win, deckout = evaluate(session, model, botFaction)
 
-		print("Final bot score: {} - {}".format(wins, losses))
+			if win:
+				if deckout:
+					wins[0] += 1
+				else:
+					wins[1] += 1
+			else:
+				if deckout:
+					losses[0] += 1
+				else:
+					losses[1] += 1
+
+			if f == 0:
+				botFaction = Faction.getOppFaction(botFaction)
+
+		print("Final bot score: {} - {}".format(sum(wins), sum(losses)))
+		print("Wins by deckout vs stuck: {} - {}".format(wins[0], wins[1]))
+		print("Losses by deckout vs stuck: {} - {}".format(losses[0], losses[1]))
 
 if __name__ == "__main__":
 
 	parser = argparse.ArgumentParser(description='Make bot play against random n times')
 	parser.add_argument('-n', type=int)
+	parser.add_argument('-f', type=int, choices=range(3), help='0: alternate, 1: light, 2: dark')
 	args = parser.parse_args()
-
-	if args.n:
-		run(n=args.n)
-	else:
-		run()
+	run(n=args.n, f=args.f)
